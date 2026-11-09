@@ -10,35 +10,95 @@ def db_connect(db_path: Path) -> sqlite3.Connection:
     # Enable reading rows by name rather than by position [ex. 0]
     db_connection.row_factory = sqlite3.Row
 
-    return db_connection
+    return db_connection 
 
 # Creates the users table
 def create_tables(db_connection: sqlite3.Connection) -> None:
+        # Creates the users table
     # kek_salt is used to create KEK that decrypts the encrypted DEK
-    db_connection.execute("CREATE TABLE IF NOT EXISTS users(" \
-            "user_id TEXT NOT NULL PRIMARY KEY, " \
-            "username TEXT UNIQUE NOT NULL," \
-            "email TEXT UNIQUE NOT NULL, " \
-            "password_hash TEXT NOT NULL, " \
-            "role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')), " \
-            "encrypted_dek BLOB NOT NULL, " \
-            "encrypted_dek_nonce BLOB NOT NULL," \
-            "kek_salt BLOB NOT NULL, " \
-            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, " \
-            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
-        ")" \
+    # public_key lets others wrap vault keys and entry keys FOR this user (safe to store plain)
+    # encrypted_private_key is the user's private key, locked with their DEK
+    db_connection.execute("""
+        CREATE TABLE IF NOT EXISTS users(
+            user_id TEXT NOT NULL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+            encrypted_dek BLOB NOT NULL,
+            encrypted_dek_nonce BLOB NOT NULL,
+            kek_salt BLOB NOT NULL,
+            public_key BLOB NOT NULL,
+            encrypted_private_key BLOB NOT NULL,
+            private_key_nonce BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
     )
 
-    # Creates the entries table 
-    db_connection.execute("CREATE TABLE IF NOT EXISTS vault_entries(" \
-            "vault_entry_id TEXT NOT NULL PRIMARY KEY, " \
-            "user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE, " \
-            "nonce BLOB NOT NULL, " \
-            "ciphertext BLOB NOT NULL, " \
-            "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, " \
-            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP" \
-        ")"
+    # Creates the vaults table (a vault is also a group)
+    # owner_id has full control of the vault
+    # member_role is what every other member of the vault can do
+    db_connection.execute("""
+        CREATE TABLE IF NOT EXISTS vaults(
+            vault_id TEXT NOT NULL PRIMARY KEY,
+            vault_name TEXT NOT NULL,
+            owner_id TEXT NOT NULL REFERENCES users(user_id),
+            member_role TEXT NOT NULL DEFAULT 'view' CHECK (member_role IN ('edit', 'view')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
     )
+
+    # Creates the vault shares table (who is in each vault)
+    # wrapped_vault_key is the vault key locked with that member's public key
+    # role is empty to use the vault's member_role, or set to override it for this member
+    db_connection.execute("""
+        CREATE TABLE IF NOT EXISTS vault_shares(
+            vault_id TEXT NOT NULL REFERENCES vaults(vault_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            wrapped_vault_key BLOB NOT NULL,
+            role TEXT CHECK (role IN ('edit', 'view')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (vault_id, user_id)
+        )"""
+    )
+
+    # Creates the entries table
+    # Data is locked with the entry's own key
+    # wrapped_entry_key is the entry key locked with the vault key
+    # created_by is who added it, kept even if that user is later deleted
+    db_connection.execute("""
+        CREATE TABLE IF NOT EXISTS vault_entries(
+            vault_entry_id TEXT NOT NULL PRIMARY KEY,
+            vault_id TEXT NOT NULL REFERENCES vaults(vault_id) ON DELETE CASCADE,
+            created_by TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+            wrapped_entry_key BLOB NOT NULL,
+            entry_key_nonce BLOB NOT NULL,
+            nonce BLOB NOT NULL,
+            ciphertext BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+
+    # Creates the entry permissions table (single entries shared directly)
+    # wrapped_entry_key is the entry key locked with that user's public key
+    db_connection.execute("""
+        CREATE TABLE IF NOT EXISTS entry_permissions(
+            vault_entry_id TEXT NOT NULL REFERENCES vault_entries(vault_entry_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            wrapped_entry_key BLOB NOT NULL,
+            role TEXT NOT NULL DEFAULT 'view' CHECK (role IN ('edit', 'view')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (vault_entry_id, user_id)
+        )"""
+    )
+
+    # Indexes for looking up everything a user can open
+    db_connection.execute("CREATE INDEX IF NOT EXISTS idx_vault_shares_user ON vault_shares (user_id)")
+    db_connection.execute("CREATE INDEX IF NOT EXISTS idx_entry_permissions_user ON entry_permissions (user_id)")
+    db_connection.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_vault ON vault_entries (vault_id)")
 
     # Creates the login attempts table 
     db_connection.execute("""
@@ -59,24 +119,6 @@ def create_tables(db_connection: sqlite3.Connection) -> None:
             attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
     )
-
-    # Create index for emails for login attempts
-    db_connection.execute("""
-        CREATE INDEX IF NOT EXISTS idx_login_email_time
-        ON login_attempts (email, attempted_at)
-    """)
-
-    # Create index for ip_addres for login attempts
-    db_connection.execute("""
-        CREATE INDEX IF NOT EXISTS idx_login_ip_time
-        ON login_attempts (ip_address, attempted_at)
-    """)
-
-    # Create index for ip_address for new account registers
-    db_connection.execute("""
-        CREATE INDEX IF NOT EXISTS idx_register_ip_time
-        ON register_attempts (ip_address, attempted_at)
-    """)
 
     # Commit the table creations
     db_connection.commit()
