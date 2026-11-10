@@ -2,6 +2,7 @@ from core import crypto
 import os
 import pytest
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 
 # ========== Password Hashing ==========
@@ -229,6 +230,98 @@ class Test_Encryption_Decryption:
         # Decrypt the data
         with pytest.raises(InvalidTag):
             decrypted_data = crypto.decrypt(kek, nonce, tampered_data, aad)
+
+# ========== Key Pairs ==========
+
+class Test_Key_Pairs:
+    # Both keys come back as 32 bytes
+    def test_key_pair_is_32_bytes_each(self):
+        private_key, public_key = crypto.new_key_pair()
+        assert isinstance(private_key, bytes)
+        assert isinstance(public_key, bytes)
+        assert len(private_key) == 32
+        assert len(public_key) == 32
+
+    # Every key pair is new and random
+    def test_key_pairs_are_unique(self):
+        private_a, public_a = crypto.new_key_pair()
+        private_b, public_b = crypto.new_key_pair()
+        assert private_a != private_b
+        assert public_a != public_b
+
+    # The public key really belongs to the private key
+    def test_public_key_matches_private_key(self):
+        private_key, public_key = crypto.new_key_pair()
+        rebuilt = X25519PrivateKey.from_private_bytes(private_key).public_key().public_bytes_raw()
+        assert rebuilt == public_key
+
+    # The two halves are different
+    def test_public_key_is_not_private_key(self):
+        private_key, public_key = crypto.new_key_pair()
+        assert private_key != public_key
+
+
+# ========== Public Key Wrapping ==========
+
+class Test_Public_Key_Wrapping:
+    # Wrapped with Brock's public key, opened with Brock's private key
+    def test_wrap_unwrap_round_trip(self):
+        brock_private, brock_public = crypto.new_key_pair()
+        vault_key = crypto.new_dek()
+
+        wrapped = crypto.wrap_for_public_key(brock_public, vault_key, b"vault:v1")
+        assert crypto.unwrap_with_private_key(brock_private, wrapped, b"vault:v1") == vault_key
+
+    # Someone else's private key can't open it
+    def test_wrong_private_key_fails(self):
+        brock_private, brock_public = crypto.new_key_pair()
+        eve_private, eve_public = crypto.new_key_pair()
+
+        wrapped = crypto.wrap_for_public_key(brock_public, crypto.new_dek(), b"vault:v1")
+        with pytest.raises(InvalidTag):
+            crypto.unwrap_with_private_key(eve_private, wrapped, b"vault:v1")
+
+    # The wrong label fails, same as AES-GCM
+    def test_wrong_aad_fails(self):
+        brock_private, brock_public = crypto.new_key_pair()
+
+        wrapped = crypto.wrap_for_public_key(brock_public, crypto.new_dek(), b"vault:v1")
+        with pytest.raises(InvalidTag):
+            crypto.unwrap_with_private_key(brock_private, wrapped, b"vault:v2")
+
+    # One flipped bit is caught
+    def test_tampered_blob_fails(self):
+        brock_private, brock_public = crypto.new_key_pair()
+
+        wrapped = crypto.wrap_for_public_key(brock_public, crypto.new_dek(), b"vault:v1")
+        tampered = wrapped[:-1] + bytes([wrapped[-1] ^ 1])
+        with pytest.raises(InvalidTag):
+            crypto.unwrap_with_private_key(brock_private, tampered, b"vault:v1")
+
+    # Wrapping the same key twice gives different blobs (new throwaway pair each time)
+    def test_wrapping_twice_differs(self):
+        brock_private, brock_public = crypto.new_key_pair()
+        vault_key = crypto.new_dek()
+
+        first = crypto.wrap_for_public_key(brock_public, vault_key, b"vault:v1")
+        second = crypto.wrap_for_public_key(brock_public, vault_key, b"vault:v1")
+        assert first != second
+
+    # The wrapped key never appears in the blob
+    def test_wrapped_data_is_hidden(self):
+        brock_private, brock_public = crypto.new_key_pair()
+        vault_key = crypto.new_dek()
+
+        wrapped = crypto.wrap_for_public_key(brock_public, vault_key, b"vault:v1")
+        assert vault_key not in wrapped
+
+    # Blob is temp_public (32) + nonce (12) + data + tag (16)
+    def test_blob_length(self):
+        brock_private, brock_public = crypto.new_key_pair()
+        vault_key = crypto.new_dek()
+
+        wrapped = crypto.wrap_for_public_key(brock_public, vault_key, b"vault:v1")
+        assert len(wrapped) == 32 + 12 + len(vault_key) + 16
 
 class test_example:
     def test_example():

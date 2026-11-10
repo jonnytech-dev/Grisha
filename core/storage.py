@@ -85,7 +85,7 @@ def create_tables(db_connection: sqlite3.Connection) -> None:
     # Creates the entry permissions table (single entries shared directly)
     # wrapped_entry_key is the entry key locked with that user's public key
     db_connection.execute("""
-        CREATE TABLE IF NOT EXISTS entry_permissions(
+        CREATE TABLE IF NOT EXISTS entry_shares(
             vault_entry_id TEXT NOT NULL REFERENCES vault_entries(vault_entry_id) ON DELETE CASCADE,
             user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             wrapped_entry_key BLOB NOT NULL,
@@ -97,7 +97,7 @@ def create_tables(db_connection: sqlite3.Connection) -> None:
 
     # Indexes for looking up everything a user can open
     db_connection.execute("CREATE INDEX IF NOT EXISTS idx_vault_shares_user ON vault_shares (user_id)")
-    db_connection.execute("CREATE INDEX IF NOT EXISTS idx_entry_permissions_user ON entry_permissions (user_id)")
+    db_connection.execute("CREATE INDEX IF NOT EXISTS idx_entry_shares_user ON entry_shares (user_id)")
     db_connection.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_vault ON vault_entries (vault_id)")
 
     # Creates the login attempts table 
@@ -123,6 +123,11 @@ def create_tables(db_connection: sqlite3.Connection) -> None:
     # Commit the table creations
     db_connection.commit()
 
+
+# ======================================
+# ========== CREATE USER DATA ==========
+# ======================================
+
 # Create a new user
 def create_user(
         db_connection: sqlite3.Connection,
@@ -133,6 +138,9 @@ def create_user(
         encrypted_dek: bytes,
         encrypted_dek_nonce: bytes,
         kek_salt: bytes,
+        public_key: bytes,
+        encrypted_private_key: bytes,
+        private_key_nonce: bytes,
         role: str = "user"
     ) -> None:
 
@@ -144,39 +152,130 @@ def create_user(
             role,
             encrypted_dek,
             encrypted_dek_nonce,
-            kek_salt
+            kek_salt,
+            public_key,
+            encrypted_private_key,
+            private_key_nonce
         )
 
-        db_connection.execute("INSERT INTO users (user_id, username, email, password_hash, role, encrypted_dek, encrypted_dek_nonce, kek_salt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", user_data)
+        db_connection.execute("""
+            INSERT INTO users 
+                (user_id, username, email, password_hash, role, encrypted_dek, encrypted_dek_nonce, kek_salt, public_key, encrypted_private_key, private_key_nonce) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", user_data)
         db_connection.commit()
 
-# GET a user by email
-def find_email(db_connection: sqlite3.Connection, email: str) -> sqlite3.Row | None:
-    user = db_connection.execute("SELECT user_id, role, password_hash, kek_salt, encrypted_dek, encrypted_dek_nonce FROM users WHERE email = ?", (email.lower(), )).fetchone()
-    return user
+
+def create_vault(db_connection: sqlite3.Connection, vault_id: str, vault_name: str, owner_id: str, member_role: str = 'view') -> None:
+    db_connection.execute("""
+        INSERT INTO vaults (vault_id, vault_name, owner_id, member_role) VALUES (?, ?, ?, ?)""", 
+        (vault_id, vault_name, owner_id, member_role))
 
 # Create a new vault entry connected to a user
 def create_vault_entry(
     db_connection: sqlite3.Connection,
-    vault_entry_id, # must be passed in since the encryption uses the vault_entry_id as the AAD(label)
-    user_id: str,
+    vault_entry_id: str, # must be passed in since the encryption uses the vault_entry_id as the AAD(label)
+    vault_id: str,
+    created_by: str,
+    wrapped_entry_key: bytes,
+    entry_key_nonce: bytes,
     nonce: bytes,
     ciphertext: bytes,
 ) -> None:
 
-    db_connection.execute('INSERT INTO vault_entries (vault_entry_id, user_id, nonce, ciphertext) VALUES (?, ?, ?, ?)', (vault_entry_id, user_id, nonce, ciphertext))
+    db_connection.execute('''
+        INSERT INTO vault_entries (vault_entry_id, vault_id, created_by, wrapped_entry_key, entry_key_nonce, nonce, ciphertext) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)''', (vault_entry_id, vault_id, created_by, wrapped_entry_key, entry_key_nonce, nonce, ciphertext))
     db_connection.commit()
-    
+
+def create_vault_share(db_connection: sqlite3.Connection, vault_id: str, user_id: str, wrapped_vault_key: bytes, role: str | None = None) -> None:
+    db_connection.execute("""
+        INSERT INTO vault_shares (vault_id, user_id, wrapped_vault_key, role) VALUES (?, ?, ?, ?)""",
+        (vault_id, user_id, wrapped_vault_key, role)    
+    )
+
+def create_entry_share(db_connection: sqlite3.Connection, vault_entry_id: str, user_id: str, wrapped_entry_key: bytes, role: str = 'view') -> None:
+    db_connection.execute("""
+        INSERT INTO entry_shares (vault_entry_id, user_id, wrapped_entry_key, role) VALUES (?, ?, ?, ?)""",
+        (vault_entry_id, user_id, wrapped_entry_key, role)    
+    )
+
+# ======================================
+# ========== GET USER DATA =============
+# ======================================
+
+def get_public_key(db_connection: sqlite3.Connection, user_id: str) -> bytes | None:
+    row = db_connection.execute("""
+        SELECT public_key FROM users WHERE user_id = ?""", (user_id, )
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+# GET a user by email
+def get_user_by_email(db_connection: sqlite3.Connection, email: str) -> sqlite3.Row | None:
+    user = db_connection.execute("""
+        SELECT user_id, role, password_hash, kek_salt, encrypted_dek, encrypted_dek_nonce, public_key, encrypted_private_key, private_key_nonce 
+        FROM users 
+        WHERE email = ?""", (email.lower(), )).fetchone()
+    return user
 
 def get_vault_entries(db_connection: sqlite3.Connection, user_id: str) -> list[sqlite3.Row]:
-    vault_entries_result = db_connection.execute("SELECT vault_entry_id, nonce, ciphertext FROM vault_entries WHERE user_id = ?", (user_id, )).fetchall()
-    return vault_entries_result
-
+    return db_connection.execute('''
+        SELECT vault_entries.vault_entry_id,
+            vault_entries.vault_id,
+            vault_entries.wrapped_entry_key,
+            vault_entries.entry_key_nonce,
+            vault_entries.nonce,
+            vault_entries.ciphertext,
+            vault_shares.wrapped_vault_key,
+            COALESCE(vault_shares.role, vaults.member_role) AS role,
+            vaults.owner_id
+        FROM vault_entries
+        JOIN vault_shares ON vault_shares.vault_id = vault_entries.vault_id
+        JOIN vaults ON vaults.vault_id = vault_entries.vault_id
+        WHERE vault_shares.user_id = ?''', (user_id, )).fetchall()
 
 def get_vault_entry(db_connection: sqlite3.Connection, user_id: str, vault_entry_id: str) -> sqlite3.Row | None:
-    vault_entry_result = db_connection.execute("SELECT vault_entry_id, nonce, ciphertext FROM vault_entries WHERE user_id = ? AND vault_entry_id = ?", (user_id, vault_entry_id)).fetchone()
-    return vault_entry_result
+    return db_connection.execute('''
+        SELECT vault_entries.vault_entry_id,
+            vault_entries.vault_id,
+            vault_entries.wrapped_entry_key,
+            vault_entries.entry_key_nonce,
+            vault_entries.nonce,
+            vault_entries.ciphertext,
+            vault_shares.wrapped_vault_key,
+            COALESCE(vault_shares.role, vaults.member_role) AS role,
+            vaults.owner_id
+        FROM vault_entries
+        JOIN vault_shares ON vault_shares.vault_id = vault_entries.vault_id
+        JOIN vaults ON vaults.vault_id = vault_entries.vault_id
+        WHERE vault_shares.user_id = ? AND vault_entries.vault_entry_id = ?''', (user_id, vault_entry_id)).fetchone()
 
+def get_shared_entry(db_connection: sqlite3.Connection, user_id: str, vault_entry_id: str) -> sqlite3.Row | None:
+    return db_connection.execute('''
+        SELECT vault_entries.vault_entry_id,
+            vault_entries.vault_id,
+            vault_entries.nonce,
+            vault_entries.ciphertext,
+            entry_shares.wrapped_entry_key,
+            entry_shares.role
+        FROM vault_entries
+        JOIN entry_shares
+        ON entry_shares.vault_entry_id = vault_entries.vault_entry_id
+        WHERE entry_shares.user_id = ? AND entry_shares.vault_entry_id = ?''', (user_id, vault_entry_id)).fetchone()
+
+def get_shared_entries(db_connection: sqlite3.Connection, user_id: str, ) -> list[sqlite3.Row]:
+    return db_connection.execute('''
+        SELECT vault_entries.vault_entry_id,
+            vault_entries.vault_id,
+            vault_entries.nonce,
+            vault_entries.ciphertext,
+            entry_shares.wrapped_entry_key,
+            entry_shares.role
+        FROM vault_entries
+        JOIN entry_shares
+        ON entry_shares.vault_entry_id = vault_entries.vault_entry_id
+        WHERE entry_shares.user_id = ?''', (user_id, )).fetchall()
 
 def update_vault_entry(
     db_connection: sqlite3.Connection,

@@ -73,7 +73,7 @@ class Test_Register:
         db_connection = setup_db(tmp_path)
         auth.register(db_connection, "jon", "jon@gmail.com", "c0rrect1horseb@ttery")
 
-        user = storage.find_email(db_connection, "jon@gmail.com")
+        user = storage.get_user_by_email(db_connection, "jon@gmail.com")
         assert user["password_hash"] != "c0rrect1horseb@ttery"
         assert crypto.verify_password(user["password_hash"], "c0rrect1horseb@ttery")
         db_connection.close()
@@ -83,7 +83,7 @@ class Test_Register:
         db_connection = setup_db(tmp_path)
         user_id = auth.register(db_connection, "jon", "jon@gmail.com", "c0rrect1horseb@ttery")
 
-        user = storage.find_email(db_connection, "jon@gmail.com")
+        user = storage.get_user_by_email(db_connection, "jon@gmail.com")
         kek = crypto.derive_kek("c0rrect1horseb@ttery", user["kek_salt"])
         aad = f"user:{user_id}:dek".encode()
         dek = crypto.decrypt(kek, user["encrypted_dek_nonce"], user["encrypted_dek"], aad)
@@ -94,7 +94,7 @@ class Test_Register:
     def test_register_role_is_user(self, tmp_path):
         db_connection = setup_db(tmp_path)
         auth.register(db_connection, "jon", "jon@gmail.com", "c0rrect1horseb@ttery")
-        assert storage.find_email(db_connection, "jon@gmail.com")["role"] == "user"
+        assert storage.get_user_by_email(db_connection, "jon@gmail.com")["role"] == "user"
         db_connection.close()
 
     # A short password is rejected before anything is saved
@@ -102,7 +102,7 @@ class Test_Register:
         db_connection = setup_db(tmp_path)
         with pytest.raises(ValueError):
             auth.register(db_connection, "jon", "jon@gmail.com", "short")
-        assert storage.find_email(db_connection, "jon@gmail.com") is None
+        assert storage.get_user_by_email(db_connection, "jon@gmail.com") is None
         db_connection.close()
 
     # A duplicate email raises the app's own error, not a database error

@@ -287,7 +287,7 @@ class Test_Users:
         )
 
         email = "jonny@gmail.com"
-        user_data = storage.find_email(db_connection, email)
+        user_data = storage.get_user_by_email(db_connection, email)
         assert user_data["password_hash"] == "$argon2id$fake"
 
         db_connection.close()
@@ -322,12 +322,12 @@ class Test_Users:
         )
 
         email = "blue_dolphin@gmail.com"
-        assert storage.find_email(db_connection, email) is None
+        assert storage.get_user_by_email(db_connection, email) is None
 
         db_connection.close()
 
     # Test that an email saved with capitals can be found with lowercase
-    def test_find_email_saved_with_capitals(self, tmp_path):
+    def test_get_user_by_email_saved_with_capitals(self, tmp_path):
         # create_user saves emails as lowercase, so "Jonny@Gmail.com" is stored as "jonny@gmail.com"
         db_connection = storage.db_connect(tmp_path / "test.db")
         storage.create_tables(db_connection)
@@ -344,15 +344,15 @@ class Test_Users:
             kek_salt=os.urandom(16),
         )
 
-        user_data = storage.find_email(db_connection, "jonny@gmail.com")
+        user_data = storage.get_user_by_email(db_connection, "jonny@gmail.com")
         assert user_data is not None
         assert user_data["user_id"] == user_id
 
         db_connection.close()
 
     # Test that an email can be found when searched with capitals
-    def test_find_email_searched_with_capitals(self, tmp_path):
-        # find_email lowercases the search, so "JONNY@GMAIL.COM" still finds "jonny@gmail.com"
+    def test_get_user_by_email_searched_with_capitals(self, tmp_path):
+        # get_user_by_email lowercases the search, so "JONNY@GMAIL.COM" still finds "jonny@gmail.com"
         db_connection = storage.db_connect(tmp_path / "test.db")
         storage.create_tables(db_connection)
 
@@ -368,7 +368,7 @@ class Test_Users:
             kek_salt=os.urandom(16),
         )
 
-        user_data = storage.find_email(db_connection, "JONNY@GMAIL.COM")
+        user_data = storage.get_user_by_email(db_connection, "JONNY@GMAIL.COM")
         assert user_data is not None
         assert user_data["user_id"] == user_id
 

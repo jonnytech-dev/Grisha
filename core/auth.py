@@ -77,7 +77,7 @@ def login(db_connection: sqlite3.Connection, email: str, password: str, ip_addre
         raise AccountLockedError("Too many login attempts")
 
     # Find user by email
-    user = storage.find_email(db_connection, email)
+    user = storage.get_user_by_email(db_connection, email)
 
     # If user does not exist, hash the dummy password to prevent attackers from using time measuring
     if user is None:
